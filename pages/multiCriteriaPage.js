@@ -185,6 +185,33 @@ const MultiCriteriaPage = (() => {
         <div class="mc-section-title mt-3 mb-2"><i class="bi bi-list-ul"></i> Hop Detail</div>
         <div class="mc-hop-table">${edgeLabels}</div>`;
 
+    } else if (crit === "astar") {
+      // ── A* Optimized Path tab ──────────────────────────────────────────
+      const path = r.path || [];
+      const edgeLabels = _buildHopTable(r.edges || [], r.criterion || "distance");
+      const unit = r.criterion === "time" ? "hr" : r.criterion === "cost" ? "₹" : "km";
+      content = `
+        <div class="mc-crit-banner" style="border-color:${meta.color}40;background:${meta.color}08">
+          <div class="mcb-title" style="color:${meta.color}">
+            <i class="bi ${meta.icon}"></i> ${meta.label}
+            <span class="msc-algo">${meta.algo}</span>
+          </div>
+          <div class="mc-path-visual">
+            ${path.map((id,i)=>`<span class="mpv-node">${Graph.getNode(id)?.label||id}</span>${i<path.length-1?'<span class="mpv-arrow">→</span>':""}`).join("")}
+          </div>
+          <div class="msc-metric-row">
+            <span class="msc-big-val">${r.totalWeight}</span>
+            <span class="msc-big-unit">${unit}</span>
+            <span class="msc-hops">${path.length - 1} hop(s)</span>
+          </div>
+          <button class="btn mc-highlight-btn" onclick="MultiCriteriaPage.highlightCriterion('${crit}')">
+            <i class="bi bi-eye-fill"></i> Highlight on Map
+          </button>
+        </div>
+        <div class="mc-section-title mt-3 mb-2"><i class="bi bi-list-ul"></i> Hop Detail</div>
+        <div class="mc-hop-table">${edgeLabels}</div>
+        ${_buildTransportComparison(r.edges || [])}`;
+
     } else if (crit === "traffic") {
       const path = r.path || [];
       content = `
@@ -267,6 +294,105 @@ const MultiCriteriaPage = (() => {
     body.innerHTML = content;
   }
 
+  // ── Transport Mode Comparison ─────────────────────────────────────────────
+
+  // Shown inside the A* tab: for each mode, compute estimated time & cost
+  // based on the path's total distance. Score and suggest the best overall.
+  const _TRANSPORT_MODES = [
+    { id:"car",    label:"Car",    icon:"🚗", speed:80,   costPerKm:5.0,  color:"#3b82f6", desc:"Private / Cab" },
+    { id:"bus",    label:"Bus",    icon:"🚌", speed:60,   costPerKm:1.8,  color:"#10b981", desc:"State / AC Bus" },
+    { id:"train",  label:"Train",  icon:"🚆", speed:100,  costPerKm:1.2,  color:"#8b5cf6", desc:"Express / Rajdhani" },
+    { id:"flight", label:"Flight", icon:"✈️", speed:700,  costPerKm:8.5,  color:"#f59e0b", desc:"Domestic Air" },
+    { id:"bike",   label:"Bike",   icon:"🛵", speed:50,   costPerKm:2.5,  color:"#ef4444", desc:"Two-wheeler" },
+  ];
+
+  function _buildTransportComparison(edgeIds) {
+    if (!edgeIds || edgeIds.length === 0) return "";
+
+    // Get total distance from edge data
+    const allEdges = Graph.getEdges();
+    let totalKm = 0;
+    edgeIds.forEach(eid => {
+      const e = allEdges.find(x => x.id === eid);
+      if (e) totalKm += e.distance || 0;
+    });
+    if (totalKm === 0) return "";
+
+    // Compute time & cost per mode
+    const modes = _TRANSPORT_MODES.map(m => {
+      const timeHr  = totalKm / m.speed;
+      const cost    = Math.round(totalKm * m.costPerKm);
+      return { ...m, timeHr, cost };
+    });
+
+    // Score: normalise time (0-1) and cost (0-1), lower = better
+    const maxTime = Math.max(...modes.map(m => m.timeHr));
+    const minTime = Math.min(...modes.map(m => m.timeHr));
+    const maxCost = Math.max(...modes.map(m => m.cost));
+    const minCost = Math.min(...modes.map(m => m.cost));
+
+    modes.forEach(m => {
+      const tNorm = maxTime > minTime ? (m.timeHr - minTime) / (maxTime - minTime) : 0;
+      const cNorm = maxCost > minCost ? (m.cost    - minCost) / (maxCost - minCost) : 0;
+      m.score = (tNorm * 0.5) + (cNorm * 0.5);  // equal weight: speed + economy
+    });
+
+    const bestId = modes.reduce((b, m) => m.score < b.score ? m : b, modes[0]).id;
+
+    // Format time nicely: show hours + minutes
+    function _fmtTime(hr) {
+      const h = Math.floor(hr);
+      const m = Math.round((hr - h) * 60);
+      return h > 0 ? `${h}h ${m}m` : `${m}m`;
+    }
+
+    const cards = modes.map(m => {
+      const isBest = m.id === bestId;
+      return `
+      <div class="tmc-card ${isBest ? "tmc-best" : ""}" style="--tmc-color:${m.color}">
+        <div class="tmc-head">
+          <span class="tmc-icon">${m.icon}</span>
+          <div class="tmc-name-wrap">
+            <span class="tmc-name">${m.label}</span>
+            <span class="tmc-desc">${m.desc}</span>
+          </div>
+          ${isBest ? `<span class="tmc-badge">⭐ Best</span>` : ""}
+        </div>
+        <div class="tmc-stats">
+          <div class="tmc-stat">
+            <i class="bi bi-clock-fill"></i>
+            <span class="tmc-stat-val">${_fmtTime(m.timeHr)}</span>
+            <span class="tmc-stat-lbl">Travel Time</span>
+          </div>
+          <div class="tmc-stat-divider"></div>
+          <div class="tmc-stat">
+            <i class="bi bi-currency-rupee"></i>
+            <span class="tmc-stat-val">₹${m.cost.toLocaleString()}</span>
+            <span class="tmc-stat-lbl">Est. Cost</span>
+          </div>
+          <div class="tmc-stat-divider"></div>
+          <div class="tmc-stat">
+            <i class="bi bi-speedometer2"></i>
+            <span class="tmc-stat-val">${m.speed} km/h</span>
+            <span class="tmc-stat-lbl">Avg Speed</span>
+          </div>
+        </div>
+        <div class="tmc-bar-wrap">
+          <div class="tmc-bar" style="width:${Math.round((1 - m.score)*100)}%;background:${m.color}"></div>
+        </div>
+        <div class="tmc-bar-label">Overall score: ${Math.round((1 - m.score)*100)}%</div>
+      </div>`;
+    }).join("");
+
+    return `
+      <div class="mc-section-title mt-3 mb-2">
+        <i class="bi bi-bus-front-fill"></i> Transport Mode Comparison
+        <span class="tmc-distance-badge">📏 ${totalKm} km route</span>
+      </div>
+      <div class="tmc-note">Estimates based on path distance. Costs are approximate per-person fares.</div>
+      <div class="tmc-grid">${cards}</div>`;
+  }
+
   function _buildHopTable(edgeIds, criterion) {
     const edges = Graph.getEdges();
     const unit  = criterion === "distance" ? "km" : criterion === "time" ? "hr" : "₹";
@@ -283,6 +409,7 @@ const MultiCriteriaPage = (() => {
       </div>`;
     }).join("");
   }
+
 
   function _formatValue(crit, value, result) {
     if (crit === "distance") return `${value} km`;
